@@ -561,6 +561,38 @@ let check_layout loc id =
   let loc = make_loc loc in
   Attr.mk ~loc (mkloc id loc) (PStr [])
 
+(* Unboxed literals *)
+
+let unboxed_literals_extension : Language_extension.t = Layouts Alpha
+
+type sign = Positive | Negative
+
+let with_sign sign num =
+  match sign with
+  | Positive -> num
+  | Negative -> "-" ^ num
+
+(* CR layouts ASZ: The [unboxed_*] functions will both be improved and lose
+   their explicit assert once we have real unboxed literals in Jane syntax; they
+   may also get re-inlined at that point *)
+
+let unboxed_int sloc sign (n, m) =
+  match m with
+  | Some _ ->
+      Jane_syntax_parsing.assert_extension_enabled
+        ~loc:(make_loc sloc) unboxed_literals_extension;
+      Pconst_integer (with_sign sign n, m)
+  | None ->
+      if Language_extension.is_enabled unboxed_literals_extension then
+        expecting sloc "literal modifier"
+      else
+        not_expecting sloc "line number directive"
+
+let unboxed_float sloc sign (f, m) =
+  Jane_syntax_parsing.assert_extension_enabled
+    ~loc:(make_loc sloc) unboxed_literals_extension;
+  Pconst_float (with_sign sign f, m)
+
 %}
 
 /* Tokens */
@@ -1804,7 +1836,7 @@ formal_class_parameters:
 (* Class expressions. *)
 
 class_expr [@recover.expr Annot.Cl.mk ()]:
-    class_simple_expr
+    class_simple_expr %prec below_HASH
       { $1 }
   | FUN attributes class_fun_def
       { wrap_class_attrs ~loc:$sloc $3 $2 }
@@ -1817,7 +1849,7 @@ class_expr [@recover.expr Annot.Cl.mk ()]:
   | class_expr attribute
       { Cl.attr $1 $2 }
   | mkclass(
-      class_simple_expr nonempty_llist(labeled_simple_expr)
+      class_simple_expr nonempty_llist(labeled_simple_expr) %prec below_HASH
         { Pcl_apply($1, $2) }
     | extension
         { Pcl_extension $1 }
@@ -2301,7 +2333,7 @@ expr [@recover.expr Annot.Exp.mk ()]:
       { e }
 ;
 %inline expr_:
-  | simple_expr nonempty_llist(labeled_simple_expr)
+  | simple_expr nonempty_llist(labeled_simple_expr) %prec below_HASH
       { Pexp_apply($1, $2) }
   | expr_comma_list %prec below_COMMA
       { Pexp_tuple($1) }
@@ -3607,24 +3639,32 @@ meth_list:
 /* Constants */
 
 constant:
-  | INT          { let (n, m) = $1 in
-                   mkconst ~loc:$sloc (Pconst_integer (n, m)) }
-  | CHAR         { mkconst ~loc:$sloc (Pconst_char $1) }
-  | STRING       { let (s, strloc, d) = $1 in
-                   mkconst ~loc:$sloc (Pconst_string (s,strloc,d)) }
-  | FLOAT        { let (f, m) = $1 in
-                   mkconst ~loc:$sloc (Pconst_float (f, m)) }
+  | INT               { let (n, m) = $1 in
+                        mkconst ~loc:$sloc (Pconst_integer (n, m)) }
+  | CHAR              { mkconst ~loc:$sloc (Pconst_char $1) }
+  | STRING            { let (s, strloc, d) = $1 in
+                        mkconst ~loc:$sloc (Pconst_string (s,strloc,d)) }
+  | FLOAT             { let (f, m) = $1 in
+                        mkconst ~loc:$sloc (Pconst_float (f, m)) }
+  (* The unboxed literals have to be composed of multiple lexemes so we can
+     handle line number directives properly *)
+  | HASH INT          { unboxed_int $sloc Positive $2 }
+  | HASH FLOAT        { unboxed_float $sloc Positive $2 }
 ;
 signed_constant:
-    constant     { $1 }
-  | MINUS INT    { let (n, m) = $2 in
-                   mkconst ~loc:$sloc (Pconst_integer("-" ^ n, m)) }
-  | MINUS FLOAT  { let (f, m) = $2 in
-                   mkconst ~loc:$sloc (Pconst_float("-" ^ f, m)) }
-  | PLUS INT     { let (n, m) = $2 in
-                   mkconst ~loc:$sloc (Pconst_integer (n, m)) }
-  | PLUS FLOAT   { let (f, m) = $2 in
-                   mkconst ~loc:$sloc (Pconst_float(f, m)) }
+    constant          { $1 }
+  | MINUS INT         { let (n, m) = $2 in
+                        mkconst ~loc:$sloc (Pconst_integer("-" ^ n, m)) }
+  | MINUS FLOAT       { let (f, m) = $2 in
+                        mkconst ~loc:$sloc (Pconst_float("-" ^ f, m)) }
+  | MINUS HASH INT    { unboxed_int $sloc Negative $3 }
+  | MINUS HASH FLOAT  { unboxed_float $sloc Negative $3 }
+  | PLUS INT          { let (n, m) = $2 in
+                        mkconst ~loc:$sloc (Pconst_integer (n, m)) }
+  | PLUS FLOAT        { let (f, m) = $2 in
+                        mkconst ~loc:$sloc (Pconst_float(f, m)) }
+  | PLUS HASH INT     { unboxed_int $sloc Positive $3 }
+  | PLUS HASH FLOAT   { unboxed_float $sloc Negative $3 }
 ;
 
 /* Identifiers and long identifiers */
